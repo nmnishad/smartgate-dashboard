@@ -1,178 +1,113 @@
-"""
-IoT-Enabled Automated Flood Gate and Sluice Spillway Control System (SMART-GATE)
-Central Municipal Supervisory Web Dashboard
-Author: Nishad Mohamed (LMU ID: 25024582)
-Module: CS7080NM Cloud Computing and the Internet of Things
-"""
-
+import os
 import json
 import time
+import random
 import threading
-from datetime import datetime
 from flask import Flask, render_template, jsonify, request
+import paho.mqtt.client as mqtt
 
 app = Flask(__name__)
 
-# --- IN-MEMORY TELEMETRY STORAGE ---
-latest_data = {
+# Shared global telemetry state
+latest_telemetry = {
     "weir": {
-        "depth": 35.0,
-        "pct": 17,
+        "depth": 0.0,
+        "pct": 0,
         "gate": 0,
-        "state": "NORMAL [SAFE]",
-        "timestamp": datetime.now().strftime("%H:%M:%S")
+        "state": "INITIALIZING",
+        "last_seen": 0
     },
     "upstream": {
-        "temp": 28.5,
-        "hum": 76.0,
-        "soil": 35,
-        "rain": 4.0,
-        "runoff": 22.4,
-        "timestamp": datetime.now().strftime("%H:%M:%S")
-    },
-    "system": {
-        "mqtt_connected": False,
-        "override_active": False,
-        "override_gate": 0
+        "temp": 0.0,
+        "hum": 0.0,
+        "soil": 0,
+        "rain": 0.0,
+        "runoff": 0.0,
+        "last_seen": 0
     }
 }
 
-history_log = []
-MAX_HISTORY = 30
-
-# --- MQTT CLIENT SETUP ---
 MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT = 1883
 TOPIC_WEIR = "smartgate/weir/telemetry"
 TOPIC_UPSTREAM = "smartgate/upstream/telemetry"
-TOPIC_CONTROL = "smartgate/weir/control"
-
-mqtt_client = None
+TOPIC_COMMAND = "smartgate/weir/command"
 
 def on_connect(client, userdata, flags, rc, properties=None):
-    """Callback triggered when MQTT client establishes connection to broker."""
-    rc_code = rc if isinstance(rc, int) else getattr(rc, 'value', 0)
-    if rc_code == 0:
-        print("[MQTT] Connected successfully to HiveMQ broker!")
-        latest_data["system"]["mqtt_connected"] = True
+    if rc == 0:
+        print("[MQTT] Successfully connected to HiveMQ broker!")
         client.subscribe(TOPIC_WEIR)
         client.subscribe(TOPIC_UPSTREAM)
         print(f"[MQTT] Subscribed to {TOPIC_WEIR} and {TOPIC_UPSTREAM}")
     else:
-        print(f"[MQTT] Connection failed with code {rc_code}")
-        latest_data["system"]["mqtt_connected"] = False
+        print(f"[MQTT] Connection failed with result code {rc}")
 
 def on_message(client, userdata, msg):
-    """Callback executed when telemetry arrives from ESP32 nodes."""
+    global latest_telemetry
     try:
-        payload_str = msg.payload.decode('utf-8')
-        payload = json.loads(payload_str)
-        now_str = datetime.now().strftime("%H:%M:%S")
-
-        if msg.topic == TOPIC_WEIR:
-            latest_data["weir"]["depth"] = float(payload.get("depth", 0.0))
-            latest_data["weir"]["pct"] = int(payload.get("pct", 0))
-            latest_data["weir"]["gate"] = int(payload.get("gate", 0))
-            latest_data["weir"]["state"] = payload.get("state", "NORMAL [SAFE]")
-            latest_data["weir"]["timestamp"] = now_str
-
-        elif msg.topic == TOPIC_UPSTREAM:
-            latest_data["upstream"]["temp"] = float(payload.get("temp", 28.0))
-            latest_data["upstream"]["hum"] = float(payload.get("hum", 75.0))
-            latest_data["upstream"]["soil"] = int(payload.get("soil", 0))
-            latest_data["upstream"]["rain"] = float(payload.get("rain", 0.0))
-            latest_data["upstream"]["runoff"] = float(payload.get("runoff", 0.0))
-            latest_data["upstream"]["timestamp"] = now_str
-
-        # Append snapshot to circular time-series log for Chart.js
-        snapshot = {
-            "time": now_str,
-            "depth": latest_data["weir"]["depth"],
-            "pct": latest_data["weir"]["pct"],
-            "gate": latest_data["weir"]["gate"],
-            "rain": latest_data["upstream"]["rain"],
-            "soil": latest_data["upstream"]["soil"],
-            "runoff": latest_data["upstream"]["runoff"]
-        }
-        history_log.append(snapshot)
-        if len(history_log) > MAX_HISTORY:
-            history_log.pop(0)
-
+        payload = json.loads(msg.payload.decode('utf-8'))
+        topic = msg.topic
+        current_time = time.time()
+        
+        if topic == TOPIC_WEIR:
+            latest_telemetry["weir"]["depth"] = float(payload.get("depth", 0.0))
+            latest_telemetry["weir"]["pct"] = int(payload.get("pct", 0))
+            latest_telemetry["weir"]["gate"] = int(payload.get("gate", 0))
+            latest_telemetry["weir"]["state"] = str(payload.get("state", "UNKNOWN"))
+            latest_telemetry["weir"]["last_seen"] = current_time
+            print(f"[RX WEIR] Depth: {latest_telemetry['weir']['depth']}cm | Gate: {latest_telemetry['weir']['gate']} deg")
+            
+        elif topic == TOPIC_UPSTREAM:
+            latest_telemetry["upstream"]["temp"] = float(payload.get("temp", 0.0))
+            latest_telemetry["upstream"]["hum"] = float(payload.get("hum", 0.0))
+            latest_telemetry["upstream"]["soil"] = int(payload.get("soil", 0))
+            latest_telemetry["upstream"]["rain"] = float(payload.get("rain", 0.0))
+            latest_telemetry["upstream"]["runoff"] = float(payload.get("runoff", 0.0))
+            latest_telemetry["upstream"]["last_seen"] = current_time
+            print(f"[RX UPSTREAM] Rain: {latest_telemetry['upstream']['rain']}mm/h | Soil: {latest_telemetry['upstream']['soil']}%")
+            
     except Exception as e:
         print(f"[MQTT ERROR] Failed to parse message: {e}")
 
-def start_mqtt():
-    """Initializes Paho-MQTT client with compatibility for v1 and v2 libraries."""
-    global mqtt_client
+# Initialize and connect MQTT client at top-level so Gunicorn starts it
+client_id = f"SMART_GATE_Flask_Server_{random.randint(1000, 9999)}"
+mqtt_client = mqtt.Client(client_id=client_id)
+mqtt_client.on_connect = on_connect
+mqtt_client.on_message = on_message
+
+def start_mqtt_loop():
     try:
-        import paho.mqtt.client as paho_mqtt
-
-        client_kwargs = {"client_id": "SMART_GATE_Flask_Dashboard"}
-        if hasattr(paho_mqtt, 'CallbackAPIVersion'):
-            # paho-mqtt v2.0+ support
-            mqtt_client = paho_mqtt.Client(
-                paho_mqtt.CallbackAPIVersion.VERSION1,
-                **client_kwargs
-            )
-        else:
-            # paho-mqtt v1.x fallback
-            mqtt_client = paho_mqtt.Client(**client_kwargs)
-
-        mqtt_client.on_connect = on_connect
-        mqtt_client.on_message = on_message
         print(f"[MQTT] Connecting to {MQTT_BROKER}:{MQTT_PORT}...")
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        mqtt_client.loop_forever()
-    except Exception as ex:
-        print(f"[MQTT WARNING] Paho-MQTT network error ({ex}). Continuing in local standalone mode.")
+        mqtt_client.loop_start()
+    except Exception as e:
+        print(f"[MQTT] Connection exception: {e}")
 
-# Start MQTT daemon thread
-mqtt_thread = threading.Thread(target=start_mqtt, daemon=True)
-mqtt_thread.start()
+# Start the background thread immediately upon load
+threading.Thread(target=start_mqtt_loop, daemon=True).start()
 
-# --- FLASK ROUTES ---
+# --- ROUTES ---
 @app.route('/')
 def index():
-    """Renders the central SCADA dashboard interface."""
     return render_template('index.html')
 
-@app.route('/api/telemetry/latest', methods=['GET'])
-def get_latest_telemetry():
-    """Provides current telemetry snapshot for web polling."""
-    return jsonify(latest_data)
+@app.route('/api/telemetry', methods=['GET'])
+def get_telemetry():
+    return jsonify(latest_telemetry)
 
-@app.route('/api/telemetry/history', methods=['GET'])
-def get_history():
-    """Provides historical time-series data for Chart.js rendering."""
-    return jsonify(history_log)
-
-@app.route('/api/gate/override', methods=['POST'])
-def gate_override():
-    """Handles municipal supervisory remote gate positioning commands."""
-    data = request.json or {}
-    enable_override = bool(data.get('override', False))
-    target_angle = int(data.get('angle', 0))
-
-    latest_data["system"]["override_active"] = enable_override
-    latest_data["system"]["override_gate"] = target_angle
-
-    if enable_override:
-        latest_data["weir"]["gate"] = target_angle
-        if mqtt_client and latest_data["system"]["mqtt_connected"]:
-            ctrl_payload = json.dumps({"command": "SET_GATE", "angle": target_angle})
-            mqtt_client.publish(TOPIC_CONTROL, ctrl_payload)
-            print(f"[CONTROL] Published override command: {ctrl_payload}")
-
-    return jsonify({
-        "status": "success",
-        "override_active": enable_override,
-        "gate_angle": target_angle
-    })
+@app.route('/api/override', methods=['POST'])
+def post_override():
+    data = request.get_json()
+    if not data or 'angle' not in data:
+        return jsonify({"status": "error", "message": "Missing angle parameter"}), 400
+    
+    angle = int(data.get('angle', 0))
+    mode = data.get('mode', 'MANUAL')
+    cmd_payload = json.dumps({"mode": mode, "gate": angle})
+    
+    mqtt_client.publish(TOPIC_COMMAND, cmd_payload)
+    print(f"[TX COMMAND] Published: {cmd_payload} to {TOPIC_COMMAND}")
+    return jsonify({"status": "success", "command_sent": cmd_payload})
 
 if __name__ == '__main__':
-    print("\n=======================================================")
-    print(" SMART-GATE Municipal Supervisory Web Dashboard ")
-    print(" CS7080NM Assessment 2 - MSc Artificial Intelligence")
-    print(" Access Web Portal at: http://127.0.0.1:5000")
-    print("=======================================================\n")
     app.run(host='0.0.0.0', port=5000, debug=True)
