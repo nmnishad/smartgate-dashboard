@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SMART-GATE | Municipal Supervisory SCADA Dashboard</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @keyframes pulse-red {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(1.01); }
+    }
+    .emergency-pulse {
+      animation: pulse-red 1.2s infinite ease-in-out;
+    }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
+
+  <!-- TOP NAVIGATION BAR -->
+  <header class="bg-slate-800 border-b border-slate-700 px-6 py-4 flex flex-wrap justify-between items-center shadow-lg">
+    <div class="flex items-center space-x-3">
+      <div class="bg-blue-600 p-2.5 rounded-lg text-white shadow-md">
+        <i class="fa-solid fa-water text-2xl"></i>
+      </div>
+      <div>
+        <h1 class="text-xl font-bold tracking-wide text-white">SMART-GATE <span class="text-blue-400 font-medium text-sm">| Municipal SCADA</span></h1>
+        <p class="text-xs text-slate-400">Automated Flood Gate & Sluice Spillway Control System &bull; CS7080NM</p>
+      </div>
+    </div>
+    <div class="flex items-center space-x-6 mt-3 sm:mt-0">
+      <div class="flex items-center space-x-2 bg-slate-950 px-3 py-1.5 rounded-full border border-slate-700 text-xs">
+        <span id="mqtt-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+        <span id="mqtt-status" class="text-slate-300 font-mono font-medium">MQTT: Connected</span>
+      </div>
+      <div class="text-right">
+        <div id="live-time" class="text-sm font-mono text-slate-200 font-semibold">--:--:--</div>
+        <div class="text-xs text-slate-400">Colombo, Sri Lanka (IST)</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- EMERGENCY ALERT BANNER (Dynamically shown on critical levels) -->
+  <div id="emergency-banner" class="hidden bg-red-600 text-white px-6 py-3 shadow-xl flex items-center justify-between emergency-pulse">
+    <div class="flex items-center space-x-3">
+      <i class="fa-solid fa-triangle-exclamation text-2xl text-yellow-300"></i>
+      <div>
+        <h4 class="font-bold text-sm tracking-wide">CRITICAL FLOOD SURGE ALERT — SLUICE GATE 100% APERTURE ACTIVATED</h4>
+        <p class="text-xs text-red-100">Canal retention capacity exceeded 75%. Downstream spillway open to maximum discharge.</p>
+      </div>
+    </div>
+    <span class="text-xs bg-red-800 px-3 py-1 rounded border border-red-400 font-mono">PRIORITY 1 HIGH</span>
+  </div>
+
+  <!-- MAIN CONTAINER -->
+  <main class="flex-1 p-6 max-w-7xl mx-auto w-full space-y-6">
+
+    <!-- KPI CARDS ROW -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+      
+      <!-- Card 1: Canal Water Depth -->
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-sm relative overflow-hidden">
+        <div class="flex justify-between items-start">
+          <div>
+            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Station 1: Weir Depth</p>
+            <h3 id="card-depth" class="text-3xl font-bold text-white mt-1">0.0 <span class="text-sm text-slate-400 font-normal">cm</span></h3>
+          </div>
+          <div id="badge-state" class="px-2.5 py-1 rounded text-xs font-bold bg-emerald-950 text-emerald-400 border border-emerald-700">
+            SAFE
+          </div>
+        </div>
+        <div class="mt-4">
+          <div class="flex justify-between text-xs text-slate-400 mb-1">
+            <span>Capacity Utilization</span>
+            <span id="depth-pct">0%</span>
+          </div>
+          <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-700">
+            <div id="bar-depth" class="bg-blue-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Sluice Gate Position -->
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-sm relative overflow-hidden">
+        <div class="flex justify-between items-start">
+          <div>
+            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Sluice Gate Aperture</p>
+            <h3 id="card-gate" class="text-3xl font-bold text-white mt-1">0 <span class="text-sm text-slate-400 font-normal">deg</span></h3>
+          </div>
+          <div id="badge-gate-mode" class="px-2.5 py-1 rounded text-xs font-bold bg-blue-950 text-blue-400 border border-blue-700">
+            AUTO EDGE
+          </div>
+        </div>
+        <div class="mt-4">
+          <div class="flex justify-between text-xs text-slate-400 mb-1">
+            <span>Discharge Opening</span>
+            <span id="gate-pct">0%</span>
+          </div>
+          <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-700">
+            <div id="bar-gate" class="bg-amber-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3: Upstream Precipitation -->
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-sm relative overflow-hidden">
+        <div class="flex justify-between items-start">
+          <div>
+            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Station 2: Rain Rate</p>
+            <h3 id="card-rain" class="text-3xl font-bold text-white mt-1">0.0 <span class="text-sm text-slate-400 font-normal">mm/h</span></h3>
+          </div>
+          <div class="p-2 bg-slate-700/50 rounded-lg text-cyan-400">
+            <i class="fa-solid fa-cloud-showers-heavy text-lg"></i>
+          </div>
+        </div>
+        <div class="mt-4 flex items-center justify-between text-xs text-slate-400">
+          <span>Ambient Climate</span>
+          <span id="ambient-temp" class="text-slate-200 font-medium">28.5°C &bull; 75% RH</span>
+        </div>
+      </div>
+
+      <!-- Card 4: Runoff Risk Index -->
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-sm relative overflow-hidden">
+        <div class="flex justify-between items-start">
+          <div>
+            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Catchment Runoff Index</p>
+            <h3 id="card-runoff" class="text-3xl font-bold text-white mt-1">0.0 <span class="text-sm text-slate-400 font-normal">%</span></h3>
+          </div>
+          <div id="badge-soil" class="px-2.5 py-1 rounded text-xs font-bold bg-slate-900 text-slate-300 border border-slate-700">
+            SOIL: 35%
+          </div>
+        </div>
+        <div class="mt-4">
+          <div class="flex justify-between text-xs text-slate-400 mb-1">
+            <span>Infiltration Saturation</span>
+            <span id="runoff-risk-text">LOW</span>
+          </div>
+          <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-700">
+            <div id="bar-runoff" class="bg-indigo-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- REAL-TIME CHARTS ROW -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      
+      <!-- Chart 1: Water Depth vs Gate Position -->
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-sm">
+        <div class="flex justify-between items-center mb-4">
+          <div>
+            <h3 class="font-bold text-base text-white">Canal Depth vs. Sluice Gate Aperture</h3>
+            <p class="text-xs text-slate-400">Station 1 telemetry logged via MQTT with QoS Level 1</p>
+          </div>
+          <span class="text-xs bg-slate-900 text-blue-400 border border-slate-700 px-2.5 py-1 rounded">Real-time Stream</span>
+        </div>
+        <div class="relative h-64">
+          <canvas id="chartWeir"></canvas>
+        </div>
+      </div>
+
+      <!-- Chart 2: Rainfall vs Runoff Index -->
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-sm">
+        <div class="flex justify-between items-center mb-4">
+          <div>
+            <h3 class="font-bold text-base text-white">Upstream Rainfall vs. Runoff Potential</h3>
+            <p class="text-xs text-slate-400">Station 2 catchment precipitation & ground moisture</p>
+          </div>
+          <span class="text-xs bg-slate-900 text-cyan-400 border border-slate-700 px-2.5 py-1 rounded">Catchment Met</span>
+        </div>
+        <div class="relative h-64">
+          <canvas id="chartUpstream"></canvas>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- SUPERVISORY OVERRIDE & NODE TELEMETRY ROW -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      
+      <!-- Node Health Status Panel -->
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-sm lg:col-span-1 space-y-4">
+        <h3 class="font-bold text-base text-white border-b border-slate-700 pb-2">Network & Node Infrastructure</h3>
+        
+        <div class="space-y-3 text-xs">
+          <div class="flex justify-between items-center bg-slate-900/60 p-3 rounded-lg border border-slate-700">
+            <div>
+              <p class="font-bold text-slate-200">Node 1: Sluice Weir Station</p>
+              <p class="text-slate-400 font-mono">ID: SMART_GATE_TFT_Node</p>
+            </div>
+            <span class="px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-700 font-bold">ONLINE</span>
+          </div>
+
+          <div class="flex justify-between items-center bg-slate-900/60 p-3 rounded-lg border border-slate-700">
+            <div>
+              <p class="font-bold text-slate-200">Node 2: Catchment Weather Station</p>
+              <p class="text-slate-400 font-mono">ID: SMART_GATE_Upstream_Node</p>
+            </div>
+            <span class="px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-700 font-bold">ONLINE</span>
+          </div>
+
+          <div class="bg-slate-900/60 p-3 rounded-lg border border-slate-700 space-y-1.5">
+            <div class="flex justify-between text-slate-400">
+              <span>Cloud Broker:</span>
+              <span class="text-slate-200 font-mono">broker.hivemq.com:1883</span>
+            </div>
+            <div class="flex justify-between text-slate-400">
+              <span>Delivery Protocol:</span>
+              <span class="text-slate-200 font-mono">MQTT QoS 1 (Guaranteed)</span>
+            </div>
+            <div class="flex justify-between text-slate-400">
+              <span>Edge Actuation Latency:</span>
+              <span class="text-emerald-400 font-mono font-bold">&lt; 380 ms (Target &lt; 500 ms)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Supervisory Manual Control Panel -->
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-sm lg:col-span-2 space-y-4">
+        <div class="flex justify-between items-center border-b border-slate-700 pb-2">
+          <div>
+            <h3 class="font-bold text-base text-white">Supervisory Sluice Gate Override Control</h3>
+            <p class="text-xs text-slate-400">Authorized Municipal Engineers Remote Overrule Facility</p>
+          </div>
+          <div class="flex items-center space-x-2">
+            <span class="text-xs text-slate-400">Override Mode:</span>
+            <input type="checkbox" id="override-toggle" class="toggle-checkbox w-4 h-4 rounded text-blue-600 focus:ring-blue-500">
+          </div>
+        </div>
+
+        <div class="space-y-4 pt-1">
+          <div>
+            <div class="flex justify-between text-xs text-slate-300 font-medium mb-1">
+              <span>Target Sluice Position</span>
+              <span id="override-angle-val" class="font-bold font-mono text-blue-400">0 deg</span>
+            </div>
+            <input type="range" id="override-slider" min="0" max="90" value="0" disabled
+                   class="w-full h-2 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-blue-500 disabled:opacity-40">
+            <div class="flex justify-between text-[10px] text-slate-500 px-1 mt-1 font-mono">
+              <span>0° (Closed)</span>
+              <span>45° (Discharge)</span>
+              <span>90° (Emergency Flush)</span>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2">
+            <button onclick="setQuickOverride(0)" class="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-xs font-semibold rounded-lg text-slate-200 transition">
+              <i class="fa-solid fa-lock text-slate-400 mr-1"></i> Lock Closed (0°)
+            </button>
+            <button onclick="setQuickOverride(45)" class="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-xs font-semibold rounded-lg text-slate-200 transition">
+              <i class="fa-solid fa-angles-up text-amber-400 mr-1"></i> Half Open (45°)
+            </button>
+            <button onclick="setQuickOverride(90)" class="px-3 py-2 bg-red-900/60 hover:bg-red-800 border border-red-700 text-xs font-semibold rounded-lg text-red-200 transition">
+              <i class="fa-solid fa-triangle-exclamation text-red-400 mr-1"></i> Full Flush (90°)
+            </button>
+            <button onclick="resetAutoMode()" class="px-3 py-2 bg-blue-900/60 hover:bg-blue-800 border border-blue-700 text-xs font-semibold rounded-lg text-blue-200 transition">
+              <i class="fa-solid fa-rotate-left text-blue-400 mr-1"></i> Auto Edge Mode
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- FOOTER -->
+  <footer class="bg-slate-950 border-t border-slate-800 text-center py-3 text-xs text-slate-500">
+    SMART-GATE System Prototype &bull; London Metropolitan University &bull; MSc Artificial Intelligence (CS7080NM)
+  </footer>
+
+  <!-- SCRIPT: REAL-TIME POLLING & CHART CONFIGURATION -->
+  <script>
+    // --- CLOCK ---
+    function updateClock() {
+      const now = new Date();
+      document.getElementById('live-time').innerText = now.toLocaleTimeString('en-GB');
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // --- CHART.JS SETUP ---
+    const ctxWeir = document.getElementById('chartWeir').getContext('2d');
+    const chartWeir = new Chart(ctxWeir, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Canal Depth (cm)',
+            borderColor: '#38bdf8',
+            backgroundColor: 'rgba(56, 189, 248, 0.1)',
+            data: [],
+            yAxisID: 'y',
+            tension: 0.3,
+            fill: true
+          },
+          {
+            label: 'Gate Angle (deg)',
+            borderColor: '#f59e0b',
+            backgroundColor: 'rgba(245, 158, 11, 0.1)',
+            data: [],
+            yAxisID: 'y1',
+            tension: 0.3,
+            fill: false
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#94a3b8', font: { size: 11 } } } },
+        scales: {
+          x: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#334155' } },
+          y: {
+            title: { display: true, text: 'Depth (cm)', color: '#38bdf8' },
+            min: 0, max: 200,
+            ticks: { color: '#38bdf8' }, grid: { color: '#1e293b' }
+          },
+          y1: {
+            position: 'right',
+            title: { display: true, text: 'Gate Angle (°)', color: '#f59e0b' },
+            min: 0, max: 90,
+            ticks: { color: '#f59e0b' }, grid: { drawOnChartArea: false }
+          }
+        }
+      }
+    });
+
+    const ctxUpstream = document.getElementById('chartUpstream').getContext('2d');
+    const chartUpstream = new Chart(ctxUpstream, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Rainfall (mm/h)',
+            borderColor: '#22d3ee',
+            backgroundColor: 'rgba(34, 211, 238, 0.15)',
+            data: [],
+            tension: 0.3,
+            fill: true
+          },
+          {
+            label: 'Runoff Risk (%)',
+            borderColor: '#818cf8',
+            backgroundColor: 'rgba(129, 140, 248, 0.1)',
+            data: [],
+            tension: 0.3,
+            fill: false
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#94a3b8', font: { size: 11 } } } },
+        scales: {
+          x: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#334155' } },
+          y: {
+            title: { display: true, text: 'Value (mm/h or %)', color: '#94a3b8' },
+            min: 0, max: 100,
+            ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' }
+          }
+        }
+      }
+    });
+
+    // --- DATA POLLING ---
+    async function fetchTelemetry() {
+      try {
+        const res = await fetch('/api/telemetry/latest');
+        const data = await res.json();
+
+        // 1. Update Weir Card
+        const depth = data.weir.depth;
+        const pct = data.weir.pct;
+        const gate = data.weir.gate;
+        const state = data.weir.state;
+
+        document.getElementById('card-depth').innerHTML = `${depth.toFixed(1)} <span class="text-sm text-slate-400 font-normal">cm</span>`;
+        document.getElementById('depth-pct').innerText = `${pct}%`;
+        document.getElementById('bar-depth').style.width = `${Math.min(pct, 100)}%`;
+
+        document.getElementById('card-gate').innerHTML = `${gate} <span class="text-sm text-slate-400 font-normal">deg</span>`;
+        document.getElementById('gate-pct').innerText = `${Math.round((gate/90)*100)}%`;
+        document.getElementById('bar-gate').style.width = `${(gate/90)*100}%`;
+
+        // Badge & Emergency Banner State
+        const badgeState = document.getElementById('badge-state');
+        const emergBanner = document.getElementById('emergency-banner');
+
+        if (pct < 40) {
+          badgeState.className = "px-2.5 py-1 rounded text-xs font-bold bg-emerald-950 text-emerald-400 border border-emerald-700";
+          badgeState.innerText = "SAFE";
+          emergBanner.classList.add('hidden');
+        } else if (pct >= 40 && pct < 75) {
+          badgeState.className = "px-2.5 py-1 rounded text-xs font-bold bg-amber-950 text-amber-400 border border-amber-700";
+          badgeState.innerText = "WARNING";
+          emergBanner.classList.add('hidden');
+        } else {
+          badgeState.className = "px-2.5 py-1 rounded text-xs font-bold bg-red-950 text-red-400 border border-red-700 animate-pulse";
+          badgeState.innerText = "EMERGENCY";
+          emergBanner.classList.remove('hidden');
+        }
+
+        // 2. Update Upstream Card
+        const rain = data.upstream.rain;
+        const soil = data.upstream.soil;
+        const temp = data.upstream.temp;
+        const hum = data.upstream.hum;
+        const runoff = data.upstream.runoff;
+
+        document.getElementById('card-rain').innerHTML = `${rain.toFixed(1)} <span class="text-sm text-slate-400 font-normal">mm/h</span>`;
+        document.getElementById('ambient-temp').innerText = `${temp.toFixed(1)}°C \u2022 ${hum.toFixed(1)}% RH`;
+        document.getElementById('card-runoff').innerHTML = `${runoff.toFixed(1)} <span class="text-sm text-slate-400 font-normal">%</span>`;
+        document.getElementById('badge-soil').innerText = `SOIL: ${soil}%`;
+        document.getElementById('bar-runoff').style.width = `${Math.min(runoff, 100)}%`;
+
+        document.getElementById('runoff-risk-text').innerText = runoff > 60 ? 'HIGH RISK' : (runoff > 30 ? 'MODERATE' : 'LOW');
+
+        // 3. Update Charts
+        const histRes = await fetch('/api/telemetry/history');
+        const hist = await histRes.json();
+        if (hist.length > 0) {
+          const times = hist.map(h => h.time);
+          chartWeir.data.labels = times;
+          chartWeir.data.datasets[0].data = hist.map(h => h.depth);
+          chartWeir.data.datasets[1].data = hist.map(h => h.gate);
+          chartWeir.update('none');
+
+          chartUpstream.data.labels = times;
+          chartUpstream.data.datasets[0].data = hist.map(h => h.rain);
+          chartUpstream.data.datasets[1].data = hist.map(h => h.runoff);
+          chartUpstream.update('none');
+        }
+
+      } catch (err) {
+        console.error("Telemetry fetch error:", err);
+      }
+    }
+
+    setInterval(fetchTelemetry, 1500);
+    fetchTelemetry();
+
+    // --- SUPERVISORY CONTROL OVERRIDE ---
+    const toggle = document.getElementById('override-toggle');
+    const slider = document.getElementById('override-slider');
+    const angleVal = document.getElementById('override-angle-val');
+    const badgeMode = document.getElementById('badge-gate-mode');
+
+    toggle.addEventListener('change', (e) => {
+      slider.disabled = !e.target.checked;
+      badgeMode.innerText = e.target.checked ? "MANUAL OVERRIDE" : "AUTO EDGE";
+      badgeMode.className = e.target.checked 
+        ? "px-2.5 py-1 rounded text-xs font-bold bg-amber-950 text-amber-400 border border-amber-700"
+        : "px-2.5 py-1 rounded text-xs font-bold bg-blue-950 text-blue-400 border border-blue-700";
+      
+      if (!e.target.checked) {
+        resetAutoMode();
+      }
+    });
+
+    slider.addEventListener('input', (e) => {
+      angleVal.innerText = `${e.target.value} deg`;
+    });
+
+    slider.addEventListener('change', (e) => {
+      sendOverride(true, e.target.value);
+    });
+
+    function setQuickOverride(deg) {
+      toggle.checked = true;
+      slider.disabled = false;
+      slider.value = deg;
+      angleVal.innerText = `${deg} deg`;
+      badgeMode.innerText = "MANUAL OVERRIDE";
+      badgeMode.className = "px-2.5 py-1 rounded text-xs font-bold bg-amber-950 text-amber-400 border border-amber-700";
+      sendOverride(true, deg);
+    }
+
+    function resetAutoMode() {
+      toggle.checked = false;
+      slider.disabled = true;
+      badgeMode.innerText = "AUTO EDGE";
+      badgeMode.className = "px-2.5 py-1 rounded text-xs font-bold bg-blue-950 text-blue-400 border border-blue-700";
+      sendOverride(false, 0);
+    }
+
+    async function sendOverride(active, angle) {
+      try {
+        await fetch('/api/gate/override', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ override: active, angle: parseInt(angle) })
+        });
+      } catch (err) {
+        console.error("Override send error:", err);
+      }
+    }
+  </script>
+
+</body>
+</html>
